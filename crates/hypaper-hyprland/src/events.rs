@@ -72,3 +72,106 @@ pub fn parse_event(line: &str) -> Result<HyprlandEvent, HyprlandError> {
         ))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use hypaper_types::hyprland::HyprlandEvent;
+
+    use super::*;
+    use crate::error::HyprlandError;
+
+    #[test]
+    fn test_workspace_event() {
+        // Arrange
+        let line = "workspace>>2";
+
+        // Act
+        let event = parse_event(line).unwrap();
+
+        // Assert
+        assert!(matches!(event, HyprlandEvent::WorkspaceChanged { id: 2 }));
+    }
+
+    #[test]
+    fn test_focusedwindow_event() {
+        // Arrange
+        let line = "focusedwindow>>firefox,Mozilla Firefox";
+
+        // Act
+        let event = parse_event(line).unwrap();
+
+        // Assert
+        let HyprlandEvent::WindowFocused { class, title } = event else {
+            panic!("expected WindowFocused");
+        };
+        assert_eq!(class, "firefox");
+        assert_eq!(title, "Mozilla Firefox");
+    }
+
+    #[test]
+    fn test_fullscreen_entered() {
+        // Arrange
+        let line = "fullscreen>>1";
+
+        // Act
+        let event = parse_event(line).unwrap();
+
+        // Assert
+        assert!(matches!(event, HyprlandEvent::FullscreenEntered));
+    }
+
+    #[test]
+    fn test_fullscreen_exited() {
+        // Arrange
+        let line = "fullscreen>>0";
+
+        // Act
+        let event = parse_event(line).unwrap();
+
+        // Assert
+        assert!(matches!(event, HyprlandEvent::FullscreenExited));
+    }
+
+    #[test]
+    fn test_monitor_added() {
+        // Arrange
+        let line = "monitoradded>>DP-1";
+
+        // Act
+        let event = parse_event(line).unwrap();
+
+        // Assert
+        let HyprlandEvent::MonitorAdded { name } = event else {
+            panic!("expected MonitorAdded");
+        };
+        assert_eq!(name, "DP-1");
+    }
+
+    #[test]
+    fn test_unknown_event_returns_error() {
+        // Arrange
+        let line = "unknownevent>>somedata";
+
+        // Act
+        let result = parse_event(line);
+
+        // Assert
+        assert!(matches!(result, Err(HyprlandError::ParseError(_))));
+    }
+
+    #[test]
+    fn test_focusedwindow_title_with_comma() {
+        // Arrange
+        let line = "focusedwindow>>firefox,My Video, Part 2";
+
+        // Act
+        let event = parse_event(line).unwrap();
+
+        // Assert
+        let HyprlandEvent::WindowFocused { class, title } = event else {
+            panic!("expected WindowFocused");
+        };
+        assert_eq!(class, "firefox");
+        assert_eq!(title, "My Video, Part 2");
+    }
+}

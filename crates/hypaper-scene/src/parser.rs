@@ -237,3 +237,165 @@ fn convert_uniform(value: toml::Value) -> Result<UniformValue, SceneError> {
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Cursor, Write};
+
+    use zip::write::FileOptions;
+    use zip::CompressionMethod;
+
+    use super::*;
+    use crate::error::SceneError;
+
+    fn make_zip(files: &[(&str, &str)]) -> Vec<u8> {
+        let buf = Cursor::new(Vec::new());
+        let mut zip = zip::write::ZipWriter::new(buf);
+        let options = FileOptions::default().compression_method(CompressionMethod::Stored);
+        for (name, content) in files {
+            zip.start_file(*name, options).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn write_temp(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    const MINIMAL_TOML: &str = r#"
+[meta]
+name = "Test Scene"
+author = "Test Author"
+version = "1.0.0"
+engine_version = "0.1.0"
+
+[config]
+fps = 30
+resolution = [1920, 1080]
+
+[[layers]]
+id = "bg"
+z_index = 0
+visible = true
+opacity = 1.0
+blend_mode = "Normal"
+
+[layers.config.image]
+src = "bg.png"
+fit_mode = "Fill"
+"#;
+
+    const PARTICLES_TOML: &str = r#"
+[meta]
+name = "Particles"
+author = "Test"
+version = "1.0.0"
+engine_version = "0.1.0"
+
+[config]
+fps = 60
+resolution = [1920, 1080]
+
+[[layers]]
+id = "snow"
+z_index = 1
+visible = true
+opacity = 0.8
+blend_mode = "Additive"
+
+[layers.config.particles]
+texture = "snow.png"
+count = 200
+emit_rate = 10.0
+lifetime = 5.0
+velocity_x = -0.5
+velocity_y = 1.0
+size = 8.0
+opacity = 0.9
+gravity = 0.1
+emitter = "Top"
+"#;
+
+    #[test]
+    fn test_parse_minimal_scene() {
+        // Arrange
+        let bytes = make_zip(&[("scene.toml", MINIMAL_TOML)]);
+        let path = write_temp("hypaper_test_minimal.hyscene", &bytes);
+
+        // Act
+        let scene = parse_hyscene(&path).unwrap();
+
+        // Assert
+        assert_eq!(scene.meta.name, "Test Scene");
+        assert_eq!(scene.meta.author, "Test Author");
+        assert_eq!(scene.meta.version, "1.0.0");
+        assert_eq!(scene.config.fps, 30);
+        assert_eq!(scene.config.resolution, [1920, 1080]);
+        assert_eq!(scene.layers.len(), 1);
+    }
+
+    #[test]
+    fn test_missing_file_returns_io_error() {
+        // Arrange
+        let path = std::path::Path::new("/tmp/does_not_exist_hypaper_xyz.hyscene");
+
+        // Act
+        let result = parse_hyscene(path);
+
+        // Assert
+        assert!(matches!(result, Err(SceneError::Io(_))));
+    }
+
+    #[test]
+    fn test_empty_zip_returns_missing_manifest() {
+        // Arrange
+        let bytes = make_zip(&[]);
+        let path = write_temp("hypaper_test_empty.hyscene", &bytes);
+
+        // Act
+        let result = parse_hyscene(&path);
+
+        // Assert
+        assert!(matches!(result, Err(SceneError::MissingManifest)));
+    }
+
+    #[test]
+    fn test_parse_image_layer() {
+        // Arrange
+        let bytes = make_zip(&[("scene.toml", MINIMAL_TOML)]);
+        let path = write_temp("hypaper_test_image_layer.hyscene", &bytes);
+
+        // Act
+        let scene = parse_hyscene(&path).unwrap();
+
+        // Assert
+        assert_eq!(scene.layers.len(), 1);
+        let LayerKind::Image(ref img) = scene.layers[0].kind else {
+            panic!("expected LayerKind::Image");
+        };
+        assert_eq!(img.src, "bg.png");
+        assert!(matches!(img.fit_mode, FitMode::Fill));
+    }
+
+    #[test]
+    fn test_parse_particles_layer() {
+        // Arrange
+        let bytes = make_zip(&[("scene.toml", PARTICLES_TOML)]);
+        let path = write_temp("hypaper_test_particles.hyscene", &bytes);
+
+        // Act
+        let scene = parse_hyscene(&path).unwrap();
+
+        // Assert
+        assert_eq!(scene.layers.len(), 1);
+        let LayerKind::Particles(ref p) = scene.layers[0].kind else {
+            panic!("expected LayerKind::Particles");
+        };
+        assert_eq!(p.texture, "snow.png");
+        assert_eq!(p.count, 200);
+        assert!(matches!(p.emitter, EmitterMode::Top));
+    }
+}
