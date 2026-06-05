@@ -7,8 +7,12 @@
 
 pub mod context;
 pub mod error;
+pub mod fit;
 pub mod pipeline;
+pub mod renderer;
 pub mod texture;
 
 pub use context::{create_context, create_context_for_surface, RenderContext};
 pub use error::RendererError;
+pub use fit::{compute_uvs, FitMode};
+pub use renderer::Renderer;

@@ -4,11 +4,24 @@
 ///
 /// The vertex shader generates a screen-filling quad from 6 vertices using
 /// only the built-in `vertex_index`; no vertex buffer is required.
+/// UV coordinates are provided via a uniform buffer (binding 2) so that
+/// different [`crate::fit::FitMode`] values can be applied without recompiling.
 const FULLSCREEN_SHADER: &str = r#"
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0)       uv:       vec2<f32>,
 }
+
+// UV corners packed as two vec4s: uv0 = (BL.u, BL.v, BR.u, BR.v),
+//                                  uv1 = (TL.u, TL.v, TR.u, TR.v).
+struct UvUniforms {
+    uv0: vec4<f32>,
+    uv1: vec4<f32>,
+}
+
+@group(0) @binding(0) var t_diffuse: texture_2d<f32>;
+@group(0) @binding(1) var s_diffuse: sampler;
+@group(0) @binding(2) var<uniform> uv_data: UvUniforms;
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
@@ -20,19 +33,16 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
         vec2<f32>( 1.0, -1.0),
         vec2<f32>( 1.0,  1.0),
     );
-    var uv = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 1.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(0.0, 0.0),
-        vec2<f32>(1.0, 1.0),
-        vec2<f32>(1.0, 0.0),
-    );
-    return VertexOutput(vec4<f32>(pos[vi], 0.0, 1.0), uv[vi]);
+    // Map vertex index to one of the four quad corners.
+    var uv: vec2<f32>;
+    switch vi {
+        case 0u:      { uv = uv_data.uv0.xy; } // BL
+        case 1u, 4u:  { uv = uv_data.uv0.zw; } // BR
+        case 2u, 3u:  { uv = uv_data.uv1.xy; } // TL
+        default:      { uv = uv_data.uv1.zw; } // TR (vi == 5)
+    }
+    return VertexOutput(vec4<f32>(pos[vi], 0.0, 1.0), uv);
 }
-
-@group(0) @binding(0) var t_diffuse: texture_2d<f32>;
-@group(0) @binding(1) var s_diffuse: sampler;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
@@ -82,6 +92,16 @@ pub fn create_fullscreen_pipeline(
                 binding: 1,
                 visibility: wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
                 count: None,
             },
         ],

@@ -19,6 +19,10 @@ pub enum RendererError {
     #[error("Surface error: {0}")]
     Surface(String),
 
+    /// A per-frame rendering error (surface texture acquisition, encoding, etc.).
+    #[error("Render error: {0}")]
+    Render(String),
+
     /// An I/O error while reading an asset from disk.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
