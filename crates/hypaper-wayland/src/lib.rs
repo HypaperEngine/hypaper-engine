@@ -7,6 +7,7 @@
 
 pub mod display;
 pub mod error;
+pub mod raw_handle;
 pub mod surface;
 
 pub use error::WaylandError;

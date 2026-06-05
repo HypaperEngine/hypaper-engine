@@ -10,5 +10,5 @@ pub mod error;
 pub mod pipeline;
 pub mod texture;
 
-pub use context::{create_context, RenderContext};
+pub use context::{create_context, create_context_for_surface, RenderContext};
 pub use error::RendererError;

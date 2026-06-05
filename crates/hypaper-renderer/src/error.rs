@@ -15,6 +15,10 @@ pub enum RendererError {
     #[error("Texture error: {0}")]
     Texture(String),
 
+    /// A wgpu surface could not be created from the provided Wayland handles.
+    #[error("Surface error: {0}")]
+    Surface(String),
+
     /// An I/O error while reading an asset from disk.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
