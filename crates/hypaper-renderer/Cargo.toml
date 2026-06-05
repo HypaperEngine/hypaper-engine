@@ -10,7 +10,10 @@ rust-version.workspace = true
 
 [dependencies]
 hypaper-types = { path = "../hypaper-types" }
-hypaper-scene = { path = "../hypaper-scene" }
+tokio = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 tracing = { workspace = true }
+anyhow = { workspace = true }
+wgpu = "22"
+bytemuck = { version = "1", features = ["derive"] }
+image = "0.25"

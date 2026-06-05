@@ -4,3 +4,11 @@
 //! to the GPU, and producing frames that the Wayland layer surface can display.
 
 #![warn(missing_docs)]
+
+pub mod context;
+pub mod error;
+pub mod pipeline;
+pub mod texture;
+
+pub use context::{create_context, RenderContext};
+pub use error::RendererError;
