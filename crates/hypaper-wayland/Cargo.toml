@@ -11,5 +11,6 @@ rust-version.workspace = true
 [dependencies]
 hypaper-types = { path = "../hypaper-types" }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 tracing = { workspace = true }
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.2", features = ["client"] }

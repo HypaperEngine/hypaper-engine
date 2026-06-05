@@ -4,3 +4,9 @@
 //! provides the platform abstraction through which the renderer outputs frames.
 
 #![warn(missing_docs)]
+
+pub mod display;
+pub mod error;
+pub mod surface;
+
+pub use error::WaylandError;
