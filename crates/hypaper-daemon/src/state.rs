@@ -12,8 +12,16 @@ use hypaper_types::ipc::StatusInfo;
 #[derive(Debug)]
 pub struct DaemonState {
     /// Path to the currently loaded `.hyscene` file, if any.
+    ///
+    /// Wallpaper state is now managed by `WallpaperManager`; kept here for
+    /// future cross-subsystem queries.
+    #[allow(dead_code)]
     pub current_wallpaper: Option<String>,
     /// Whether rendering is currently paused.
+    ///
+    /// Pause state is now managed by `WallpaperManager`; kept here for
+    /// future cross-subsystem queries.
+    #[allow(dead_code)]
     pub paused: bool,
     /// Instant at which the daemon was started; used to compute uptime.
     pub start_time: Instant,
@@ -30,6 +38,7 @@ impl DaemonState {
     }
 
     /// Builds a [`StatusInfo`] snapshot from the current state.
+    #[allow(dead_code)]
     pub fn to_status_info(&self) -> StatusInfo {
         StatusInfo {
             daemon_running: true,

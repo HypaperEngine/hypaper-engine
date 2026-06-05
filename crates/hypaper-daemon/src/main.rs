@@ -6,6 +6,9 @@
 mod config;
 mod ipc;
 mod state;
+mod wallpaper;
+
+use std::time::Duration;
 
 use hypaper_types::ipc::DaemonCommand;
 use tokio::sync::mpsc;
@@ -15,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init()
-        .expect("failed to initialise tracing subscriber");
+        .map_err(|e| anyhow::anyhow!("failed to init tracing: {e}"))?;
 
     let cfg = config::load_config();
     tracing::info!(
@@ -24,7 +27,8 @@ async fn main() -> anyhow::Result<()> {
         "hypaperd starting",
     );
 
-    let mut daemon_state = state::DaemonState::new();
+    let daemon_state = state::DaemonState::new();
+    let mut wallpaper_manager = wallpaper::WallpaperManager::new();
 
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<DaemonCommand>(64);
     let (event_tx, mut event_rx) = mpsc::channel(64);
@@ -45,38 +49,65 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Main event loop — processes daemon commands and Hyprland events.
+    // Render ticker: fires at `max_fps` frames per second.
+    let frame_ns = 1_000_000_000u64 / cfg.max_fps as u64;
+    let mut render_ticker = tokio::time::interval(Duration::from_nanos(frame_ns));
+    render_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    // Main event loop — interleaves frame rendering with command and event handling.
     loop {
         tokio::select! {
+            _ = render_ticker.tick() => {
+                if let Err(e) = wallpaper_manager.render_frame() {
+                    tracing::error!("render frame error: {e}");
+                }
+            }
+
             cmd = cmd_rx.recv() => {
                 match cmd {
+                    Some(DaemonCommand::SetWallpaper { path, monitor: _ }) => {
+                        tracing::info!(%path, "setting wallpaper");
+                        if let Err(e) = wallpaper_manager.set_wallpaper(&path).await {
+                            tracing::error!("set_wallpaper failed: {e}");
+                        }
+                    }
                     Some(DaemonCommand::Stop) => {
                         tracing::info!("received Stop, shutting down");
+                        wallpaper_manager.stop();
                         break;
                     }
                     Some(DaemonCommand::Pause) => {
-                        daemon_state.paused = true;
-                        tracing::info!("wallpaper paused");
+                        wallpaper_manager.pause();
                     }
                     Some(DaemonCommand::Resume) => {
-                        daemon_state.paused = false;
-                        tracing::info!("wallpaper resumed");
+                        wallpaper_manager.resume();
                     }
                     Some(DaemonCommand::GetStatus) => {
-                        let s = daemon_state.to_status_info();
+                        let uptime_secs = daemon_state.start_time.elapsed().as_secs();
                         tracing::info!(
-                            wallpaper = ?s.wallpaper,
-                            uptime_secs = s.uptime_secs,
-                            paused = daemon_state.paused,
+                            wallpaper = ?wallpaper_manager.current_path,
+                            uptime_secs,
+                            paused = wallpaper_manager.paused,
                             "daemon status",
                         );
                     }
-                    Some(_) => {
-                        tracing::warn!("Command not yet implemented");
+                    Some(DaemonCommand::Reload) => {
+                        if let Some(path) = wallpaper_manager.current_path.clone() {
+                            tracing::info!(%path, "reloading wallpaper");
+                            if let Err(e) = wallpaper_manager.set_wallpaper(&path).await {
+                                tracing::error!("reload failed: {e}");
+                            }
+                        } else {
+                            tracing::warn!("Reload requested but no wallpaper is loaded");
+                        }
+                    }
+                    Some(cmd) => {
+                        tracing::warn!(?cmd, "command not yet implemented");
                     }
                     None => break,
                 }
             }
+
             event = event_rx.recv() => {
                 match event {
                     Some(ev) => tracing::debug!(?ev, "Hyprland event"),

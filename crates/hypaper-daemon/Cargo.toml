@@ -15,7 +15,10 @@ path = "src/main.rs"
 [dependencies]
 hypaper-types = { path = "../hypaper-types" }
 hypaper-scene = { path = "../hypaper-scene" }
+hypaper-renderer = { path = "../hypaper-renderer" }
+hypaper-wayland = { path = "../hypaper-wayland" }
 hypaper-hyprland = { path = "../hypaper-hyprland" }
+zip = "0.6"
 tokio = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
