@@ -1,0 +1,16 @@
+[package]
+name = "hypaper-scene"
+description = "Parsing and validation of .hyscene scene files"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hypaper-types = { path = "../hypaper-types" }
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }

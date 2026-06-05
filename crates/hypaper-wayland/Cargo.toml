@@ -1,0 +1,15 @@
+[package]
+name = "hypaper-wayland"
+description = "Wayland integration via wlr-layer-shell and surface management"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hypaper-types = { path = "../hypaper-types" }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
