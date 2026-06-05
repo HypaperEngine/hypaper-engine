@@ -8,6 +8,7 @@ use crate::{
     error::RendererError,
     fit::{compute_uvs, FitMode},
     pipeline::{create_fullscreen_pipeline, RenderPipeline},
+    shader_layer::ShaderLayerRenderer,
     texture::{load_texture_from_bytes, GpuTexture},
 };
 
@@ -25,12 +26,16 @@ pub struct Renderer {
     /// Currently active wallpaper texture, or `None` before the first
     /// [`set_image`](Self::set_image) call.
     pub current_texture: Option<GpuTexture>,
+    /// Active WGSL shader layers drawn over the image, in order.
+    pub shader_layers: Vec<ShaderLayerRenderer>,
     /// Surface width in pixels.
     pub width: u32,
     /// Surface height in pixels.
     pub height: u32,
     /// How the texture is scaled to fill the surface.
     fit_mode: FitMode,
+    /// Instant at construction; used to compute `time` uniforms for shader layers.
+    start_time: std::time::Instant,
 }
 
 impl Renderer {
@@ -98,9 +103,11 @@ impl Renderer {
             surface_config,
             pipeline,
             current_texture: None,
+            shader_layers: Vec::new(),
             width,
             height,
             fit_mode: FitMode::Fill,
+            start_time: std::time::Instant::now(),
         })
     }
 
@@ -128,61 +135,41 @@ impl Renderer {
         Ok(())
     }
 
+    /// Compiles `wgsl_source` as a new shader layer and appends it to the
+    /// render stack.  Shader layers are drawn over the image in insertion order.
+    ///
+    /// The WGSL source must export `vs_main` and `fs_main` entry points.
+    /// The `AutoUniforms` struct and `@group(0) @binding(0)` binding are
+    /// injected as a preamble — do not redeclare them in the source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RendererError`] if pipeline creation fails synchronously.
+    pub fn add_shader_layer(&mut self, wgsl_source: &str) -> Result<(), RendererError> {
+        let layer = ShaderLayerRenderer::new(
+            &self.context.device,
+            self.surface_config.format,
+            wgsl_source,
+        )?;
+        self.shader_layers.push(layer);
+        Ok(())
+    }
+
     /// Renders one frame to the swap chain.
     ///
-    /// If no image has been set the frame is silently skipped.  UV coordinates
-    /// are recomputed every frame from the current [`FitMode`] and texture
-    /// dimensions, then uploaded via a per-frame uniform buffer.
+    /// Skipped entirely when there is nothing to render (no image and no shader
+    /// layers).  UV coordinates for the image layer are recomputed every frame.
+    /// Auto-uniforms (`time`, `resolution`, `mouse`) are written to each shader
+    /// layer before its render pass executes.
     ///
     /// # Errors
     ///
     /// Returns [`RendererError::Render`] if the swap-chain texture cannot be
     /// acquired or command encoding fails.
     pub fn render(&mut self) -> Result<(), RendererError> {
-        let tex = match &self.current_texture {
-            Some(t) => t,
-            None => return Ok(()),
-        };
-
-        let uvs = compute_uvs(
-            self.fit_mode,
-            tex.width,
-            tex.height,
-            self.width,
-            self.height,
-        );
-
-        // Upload UV corners as two vec4s (32 bytes) into a per-frame uniform buffer.
-        let uv_buffer = self
-            .context
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("uv-uniform"),
-                contents: cast_slice(&uvs),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-
-        let bind_group = self
-            .context
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("wallpaper-bg"),
-                layout: &self.pipeline.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&tex.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&tex.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: uv_buffer.as_entire_binding(),
-                    },
-                ],
-            });
+        if self.current_texture.is_none() && self.shader_layers.is_empty() {
+            return Ok(());
+        }
 
         let output = self
             .surface
@@ -200,7 +187,48 @@ impl Renderer {
                     label: Some("frame-encoder"),
                 });
 
-        {
+        // Image pass — scoped so that the `tex` borrow ends before the shader
+        // layers loop needs mutable access to `self.shader_layers`.
+        if let Some(tex) = &self.current_texture {
+            let uvs = compute_uvs(
+                self.fit_mode,
+                tex.width,
+                tex.height,
+                self.width,
+                self.height,
+            );
+
+            let uv_buffer =
+                self.context
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("uv-uniform"),
+                        contents: cast_slice(&uvs),
+                        usage: wgpu::BufferUsages::UNIFORM,
+                    });
+
+            let bind_group = self
+                .context
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("wallpaper-bg"),
+                    layout: &self.pipeline.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&tex.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&tex.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: uv_buffer.as_entire_binding(),
+                        },
+                    ],
+                });
+
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("fullscreen-pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -215,10 +243,18 @@ impl Renderer {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
-
             pass.set_pipeline(&self.pipeline.inner);
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..6, 0..1);
+        }
+
+        // Shader layers: update uniforms then record a render pass per layer.
+        let time = self.start_time.elapsed().as_secs_f32();
+        let resolution = [self.width as f32, self.height as f32];
+
+        for layer in &mut self.shader_layers {
+            layer.update_uniforms(&self.context.queue, time, resolution, [0.0, 0.0]);
+            layer.render(&mut encoder, &view);
         }
 
         self.context.queue.submit(std::iter::once(encoder.finish()));

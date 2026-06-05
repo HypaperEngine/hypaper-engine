@@ -26,4 +26,8 @@ pub enum RendererError {
     /// An I/O error while reading an asset from disk.
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A WGSL shader failed validation or could not be compiled.
+    #[error("Shader compilation error: {0}")]
+    ShaderCompilation(String),
 }
