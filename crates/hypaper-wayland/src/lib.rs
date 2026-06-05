@@ -10,4 +10,5 @@ pub mod error;
 pub mod raw_handle;
 pub mod surface;
 
+pub use display::MonitorInfo;
 pub use error::WaylandError;

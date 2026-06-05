@@ -6,15 +6,14 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_surface_v1::{Anchor, KeyboardInteractivity, ZwlrLayerSurfaceV1},
 };
 
-use crate::display::WaylandDisplay;
+use crate::display::{MonitorInfo, WaylandDisplay};
 use crate::error::WaylandError;
 
 /// Configuration used when creating a [`WaylandSurface`].
 #[derive(Debug, Clone)]
 pub struct SurfaceConfig {
-    /// Connector name of the target monitor (e.g. `"DP-1"`), or `None` to let
-    /// the compositor choose.
-    pub monitor_name: Option<String>,
+    /// Target monitor, or `None` to let the compositor choose the default output.
+    pub monitor: Option<MonitorInfo>,
     /// Desired surface width in pixels (used as fallback if the compositor
     /// sends zero in the configure event).
     pub width: u32,
@@ -58,6 +57,10 @@ unsafe impl Send for WaylandSurface {}
 /// - exclusive zone: `-1` (does not reserve screen space)
 /// - keyboard interactivity: `None`
 ///
+/// When `config.monitor` is `Some`, the surface is attached to the matching
+/// `wl_output`; if the name is not found, the first available output is used.
+/// When `config.monitor` is `None`, the compositor chooses the output.
+///
 /// The function performs a blocking Wayland roundtrip to receive the compositor's
 /// `configure` event before returning.
 ///
@@ -73,7 +76,21 @@ pub fn create_surface(
 
     let wl_surface = display.compositor.create_surface(&qh, ());
 
-    let output = display.outputs.first();
+    // Select the wl_output that matches config.monitor, falling back to the
+    // first output or None (compositor's choice) when not found.
+    let output = match &config.monitor {
+        Some(monitor) => {
+            let index = display
+                .state
+                .output_data
+                .iter()
+                .position(|d| d.name == monitor.name);
+            index
+                .and_then(|i| display.outputs.get(i))
+                .or_else(|| display.outputs.first())
+        }
+        None => display.outputs.first(),
+    };
 
     let layer_surface = display.layer_shell.get_layer_surface(
         &wl_surface,
@@ -120,8 +137,13 @@ pub fn create_surface(
     // Retrieve the raw wl_display pointer for raw-window-handle support.
     let display_ptr = display.connection.backend().display_ptr() as *mut std::ffi::c_void;
 
+    let monitor_name = config
+        .monitor
+        .as_ref()
+        .map(|m| m.name.as_str())
+        .unwrap_or("(default)");
     tracing::info!(
-        monitor = ?config.monitor_name,
+        monitor = %monitor_name,
         width,
         height,
         "created layer-shell surface",

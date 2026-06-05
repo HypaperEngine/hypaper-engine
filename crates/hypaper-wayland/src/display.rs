@@ -13,13 +13,56 @@ use wayland_protocols_wlr::layer_shell::v1::client::{
 
 use crate::error::WaylandError;
 
+// ---------------------------------------------------------------------------
+// Public monitor description type
+// ---------------------------------------------------------------------------
+
+/// Metadata describing a single connected monitor as reported by the compositor.
+#[derive(Debug, Clone)]
+pub struct MonitorInfo {
+    /// Connector name as reported by the compositor (e.g. `"DP-1"`).
+    ///
+    /// Falls back to `"output-N"` on compositors that do not advertise
+    /// `wl_output` version 4 (which introduced the `name` event).
+    pub name: String,
+    /// Current mode width in pixels, or `0` if no mode event was received.
+    pub width: u32,
+    /// Current mode height in pixels, or `0` if no mode event was received.
+    pub height: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Internal per-output tracking
+// ---------------------------------------------------------------------------
+
+/// Mutable metadata accumulated from `wl_output` events for a single output.
+pub(crate) struct OutputData {
+    /// Output name; initialised to `"output-N"`, updated by `Name` events.
+    pub(crate) name: String,
+    /// Current mode width.
+    pub(crate) width: u32,
+    /// Current mode height.
+    pub(crate) height: u32,
+}
+
+// ---------------------------------------------------------------------------
+// Wayland event-dispatch state
+// ---------------------------------------------------------------------------
+
 /// Internal event-dispatch state shared across all Wayland event-queue dispatches.
 ///
-/// Stores transient data produced by protocol events during surface initialisation.
+/// Stores transient data produced by protocol events during surface initialisation
+/// and monitor enumeration.
 pub(crate) struct WaylandState {
     /// Serial and dimensions from the most recent `zwlr_layer_surface_v1::configure` event.
     pub(crate) configure: Option<(u32, u32, u32)>,
+    /// Per-output metadata; indexed in parallel with [`WaylandDisplay::outputs`].
+    pub(crate) output_data: Vec<OutputData>,
 }
+
+// ---------------------------------------------------------------------------
+// WaylandDisplay
+// ---------------------------------------------------------------------------
 
 /// An active connection to the Wayland compositor.
 ///
@@ -53,12 +96,32 @@ impl WaylandDisplay {
             .map(|_| ())
             .map_err(|e| WaylandError::Other(e.to_string()))
     }
+
+    /// Returns metadata for every monitor currently connected to the compositor.
+    ///
+    /// The list is populated during [`connect`] and reflects the state at
+    /// connection time.  Hotplug events are not tracked after connect.
+    pub fn list_monitors(&self) -> Vec<MonitorInfo> {
+        self.state
+            .output_data
+            .iter()
+            .map(|d| MonitorInfo {
+                name: d.name.clone(),
+                width: d.width,
+                height: d.height,
+            })
+            .collect()
+    }
 }
+
+// ---------------------------------------------------------------------------
+// connect()
+// ---------------------------------------------------------------------------
 
 /// Connects to the Wayland compositor via the `WAYLAND_DISPLAY` socket.
 ///
-/// Retrieves the `wl_compositor`, `zwlr_layer_shell_v1`, and all `wl_output` globals
-/// and stores them in the returned [`WaylandDisplay`].
+/// Retrieves the `wl_compositor`, `zwlr_layer_shell_v1`, and all `wl_output` globals,
+/// performs a roundtrip to collect monitor metadata, and returns a [`WaylandDisplay`].
 ///
 /// # Errors
 ///
@@ -85,6 +148,8 @@ pub fn connect() -> Result<WaylandDisplay, WaylandError> {
     })?;
 
     // wl_output is a multi-instance global; bind each advertised output manually.
+    // We request up to version 4 so that the compositor sends the `Name` event,
+    // which gives us the human-readable connector name (e.g. "DP-1").
     let registry = globals.registry().clone();
     let output_globals: Vec<_> = globals
         .contents()
@@ -93,19 +158,40 @@ pub fn connect() -> Result<WaylandDisplay, WaylandError> {
         .filter(|g| g.interface == "wl_output")
         .collect();
 
-    let mut state = WaylandState { configure: None };
+    let mut state = WaylandState {
+        configure: None,
+        output_data: Vec::new(),
+    };
     let mut event_queue = event_queue;
 
     let outputs: Vec<wl_output::WlOutput> = output_globals
         .into_iter()
-        .map(|g| registry.bind(g.name, g.version.min(3), &qh, ()))
+        .enumerate()
+        .map(|(index, g)| {
+            // Pre-populate with a fallback name; will be overwritten by the
+            // `Name` event on compositors that support wl_output v4.
+            state.output_data.push(OutputData {
+                name: format!("output-{index}"),
+                width: 0,
+                height: 0,
+            });
+            registry.bind(g.name, g.version.min(4), &qh, index)
+        })
         .collect();
 
     event_queue
         .roundtrip(&mut state)
         .map_err(|_| WaylandError::Connection)?;
 
-    tracing::info!(outputs = outputs.len(), "connected to Wayland display");
+    tracing::info!(
+        outputs = outputs.len(),
+        monitors = ?state
+            .output_data
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect::<Vec<_>>(),
+        "connected to Wayland display",
+    );
 
     Ok(WaylandDisplay {
         connection,
@@ -118,7 +204,9 @@ pub fn connect() -> Result<WaylandDisplay, WaylandError> {
     })
 }
 
-// Dispatch implementations -------------------------------------------------
+// ---------------------------------------------------------------------------
+// Dispatch implementations
+// ---------------------------------------------------------------------------
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandState {
     fn event(
@@ -158,7 +246,36 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for WaylandState {
     }
 }
 
+impl Dispatch<wl_output::WlOutput, usize> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        data: &usize,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let index = *data;
+        if let Some(info) = state.output_data.get_mut(index) {
+            match event {
+                // Available on wl_output v4+: the connector name (e.g. "DP-1").
+                wl_output::Event::Name { name } => {
+                    info.name = name;
+                }
+                // Sent for every advertised output mode; we keep the last one
+                // (compositors send the current mode last).
+                wl_output::Event::Mode { width, height, .. } => {
+                    if width > 0 && height > 0 {
+                        info.width = width as u32;
+                        info.height = height as u32;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 delegate_noop!(WaylandState: ignore wl_compositor::WlCompositor);
 delegate_noop!(WaylandState: ignore ZwlrLayerShellV1);
-delegate_noop!(WaylandState: ignore wl_output::WlOutput);
 delegate_noop!(WaylandState: ignore wl_surface::WlSurface);

@@ -1,19 +1,36 @@
-//! Wallpaper lifecycle: Wayland surface creation, GPU renderer, and per-frame rendering.
+//! Wallpaper lifecycle: per-monitor Wayland surfaces, GPU renderers, and frame rendering.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
-/// Manages the lifecycle of the active wallpaper surface and GPU renderer.
+use hypaper_renderer::renderer::Renderer;
+use hypaper_wayland::surface::WaylandSurface;
+
+/// Per-monitor rendering state.
 ///
-/// Fields are declared in drop order: `renderer` is dropped before
-/// `wayland_surface`, which is dropped before `wayland_display`, so the raw
-/// Wayland pointers held inside the wgpu surface are always valid during cleanup.
+/// `renderer` is declared before `surface` so that it is dropped first on
+/// cleanup, releasing wgpu's internal raw `wl_surface` pointer before the
+/// underlying `WaylandSurface` is destroyed.
+pub struct MonitorState {
+    /// The active GPU renderer for this monitor.
+    renderer: Renderer,
+    /// The Wayland layer-shell background surface for this monitor.
+    ///
+    /// Held for RAII: must outlive `renderer` to keep the raw `wl_surface` pointer valid.
+    #[allow(dead_code)]
+    surface: WaylandSurface,
+}
+
+/// Manages the lifecycle of per-monitor wallpaper surfaces and GPU renderers.
+///
+/// `monitors` is declared before `wayland_display` so that all `MonitorState`
+/// entries (and thus all raw Wayland pointers held inside wgpu) are dropped
+/// before the underlying `wl_display` connection is closed.
 pub struct WallpaperManager {
-    /// Active GPU renderer; `None` until the first successful [`set_wallpaper`](Self::set_wallpaper).
-    pub renderer: Option<hypaper_renderer::renderer::Renderer>,
-    /// Active Wayland layer-shell background surface.
-    pub wayland_surface: Option<hypaper_wayland::surface::WaylandSurface>,
-    /// Path of the currently loaded `.hyscene` file.
+    /// Per-monitor rendering state, keyed by connector name (e.g. `"DP-1"`).
+    pub monitors: HashMap<String, MonitorState>,
+    /// Path of the most recently loaded `.hyscene` file.
     pub current_path: Option<String>,
     /// Whether rendering is currently paused by the user.
     pub paused: bool,
@@ -22,35 +39,32 @@ pub struct WallpaperManager {
 }
 
 impl WallpaperManager {
-    /// Creates a `WallpaperManager` with no active wallpaper.
+    /// Creates a `WallpaperManager` with no active wallpapers.
     pub fn new() -> Self {
         Self {
-            renderer: None,
-            wayland_surface: None,
+            monitors: HashMap::new(),
             current_path: None,
             paused: false,
             wayland_display: None,
         }
     }
 
-    /// Loads a `.hyscene` bundle, creates a Wayland surface and GPU renderer,
-    /// and uploads the first image layer as the active wallpaper texture.
+    /// Loads a `.hyscene` bundle and displays it on the specified monitor.
     ///
-    /// Any previously active renderer and surface are torn down before the new
-    /// ones are created.
+    /// If `monitor` is `None`, the wallpaper is set on **every** detected
+    /// monitor.  If `monitor` is `Some(name)`, only that monitor is updated.
+    ///
+    /// Per-monitor errors are logged but do not abort other monitors.
     ///
     /// # Errors
     ///
-    /// Returns an error if the scene cannot be parsed, the Wayland connection
-    /// fails, the GPU renderer cannot be initialised, or a required image asset
-    /// is missing from the archive.
-    pub async fn set_wallpaper(&mut self, path: &str) -> Result<(), anyhow::Error> {
-        let scene_path = Path::new(path);
-
-        let scene = hypaper_scene::parse_hyscene(scene_path)
-            .map_err(|e| anyhow::anyhow!("scene parse error: {e}"))?;
-
-        // Connect to the Wayland compositor on first use; reuse thereafter.
+    /// Returns an error if the Wayland connection cannot be established.
+    pub async fn set_wallpaper(
+        &mut self,
+        path: &str,
+        monitor: Option<String>,
+    ) -> Result<(), anyhow::Error> {
+        // Ensure the Wayland connection is open.
         if self.wayland_display.is_none() {
             self.wayland_display = Some(
                 hypaper_wayland::display::connect()
@@ -58,31 +72,89 @@ impl WallpaperManager {
             );
         }
 
+        // Collect target monitor names before the mutable borrow below.
+        let target_monitors: Vec<String> = match monitor {
+            Some(name) => vec![name],
+            None => self
+                .wayland_display
+                .as_ref()
+                .map(|d| d.list_monitors().into_iter().map(|m| m.name).collect())
+                .unwrap_or_default(),
+        };
+
+        if target_monitors.is_empty() {
+            tracing::warn!("no monitors detected; wallpaper not set");
+        }
+
+        for name in &target_monitors {
+            if let Err(e) = self.set_wallpaper_for_monitor(path, name).await {
+                tracing::error!(monitor = %name, "failed to set wallpaper: {e}");
+            }
+        }
+
+        self.current_path = Some(path.to_owned());
+        Ok(())
+    }
+
+    /// Loads a `.hyscene` bundle and displays it on a single named monitor.
+    ///
+    /// Any previously active renderer and surface for this monitor are torn
+    /// down (in safe order) before the new ones are created.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the scene cannot be parsed, the Wayland surface
+    /// creation fails, the GPU renderer cannot be initialised, or the display
+    /// connection is absent.
+    pub async fn set_wallpaper_for_monitor(
+        &mut self,
+        path: &str,
+        monitor_name: &str,
+    ) -> Result<(), anyhow::Error> {
+        let scene_path = Path::new(path);
+
+        let scene = hypaper_scene::parse_hyscene(scene_path)
+            .map_err(|e| anyhow::anyhow!("scene parse error: {e}"))?;
+
+        // Resolve the MonitorInfo for the requested connector name.
+        let monitor_info = self.wayland_display.as_ref().and_then(|d| {
+            d.list_monitors()
+                .into_iter()
+                .find(|m| m.name == monitor_name)
+        });
+
+        if monitor_info.is_none() {
+            tracing::warn!(
+                monitor = %monitor_name,
+                "monitor not found in display list; surface will use compositor default",
+            );
+        }
+
         let display = self
             .wayland_display
             .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("no Wayland display after connect"))?;
+            .ok_or_else(|| anyhow::anyhow!("no Wayland display"))?;
 
         let surf_config = hypaper_wayland::surface::SurfaceConfig {
-            monitor_name: None,
+            monitor: monitor_info,
             width: scene.config.resolution[0],
             height: scene.config.resolution[1],
         };
 
         let surface = hypaper_wayland::surface::create_surface(display, surf_config)
-            .map_err(|e| anyhow::anyhow!("create surface: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("create surface for {monitor_name}: {e}"))?;
 
         let raw = surface.raw_handle();
         let surf_w = surface.width;
         let surf_h = surface.height;
 
-        // Drop old renderer before replacing surface so wgpu's internal raw
-        // Wayland pointers are released while the old surface is still alive.
-        self.renderer = None;
+        // Drop old MonitorState for this monitor (renderer first, then surface)
+        // while the old surface is still alive so wgpu's raw pointers stay valid.
+        self.monitors.remove(monitor_name);
 
-        let mut renderer = hypaper_renderer::renderer::Renderer::new(&raw, surf_w, surf_h)
+        let mut renderer = Renderer::new(&raw, surf_w, surf_h)
             .await
-            .map_err(|e| anyhow::anyhow!("renderer init: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("renderer init for {monitor_name}: {e}"))?;
 
         // Read image-layer assets from the ZIP archive and upload to the GPU.
         let file =
@@ -101,38 +173,46 @@ impl WallpaperManager {
                         renderer
                             .set_image(&bytes)
                             .map_err(|e| anyhow::anyhow!("set image {}: {e}", img.src))?;
-                        tracing::info!(src = %img.src, "loaded image layer");
+                        tracing::info!(
+                            src = %img.src,
+                            monitor = %monitor_name,
+                            "loaded image layer",
+                        );
                     }
                     Err(_) => {
-                        tracing::warn!(src = %img.src, "image asset not found in archive");
+                        tracing::warn!(
+                            src = %img.src,
+                            monitor = %monitor_name,
+                            "image asset not found in archive",
+                        );
                     }
                 }
             }
         }
 
-        // Store surface before renderer; drop in reverse order on exit so the
-        // wgpu surface is released before the wl_surface pointer is invalidated.
-        self.wayland_surface = Some(surface);
-        self.renderer = Some(renderer);
-        self.current_path = Some(path.to_owned());
+        self.monitors
+            .insert(monitor_name.to_owned(), MonitorState { renderer, surface });
 
-        tracing::info!(path, width = surf_w, height = surf_h, "wallpaper set");
+        tracing::info!(
+            monitor = %monitor_name,
+            width = surf_w,
+            height = surf_h,
+            "wallpaper set",
+        );
         Ok(())
     }
 
-    /// Renders one frame if not paused and a renderer is active.
+    /// Renders one frame on every active monitor, skipping monitors that fail.
     ///
-    /// # Errors
-    ///
-    /// Propagates any error returned by [`hypaper_renderer::renderer::Renderer::render`].
+    /// Does nothing when [`paused`](Self::paused) is `true`.
     pub fn render_frame(&mut self) -> Result<(), anyhow::Error> {
         if self.paused {
             return Ok(());
         }
-        if let Some(renderer) = &mut self.renderer {
-            renderer
-                .render()
-                .map_err(|e| anyhow::anyhow!("render error: {e}"))?;
+        for (name, ms) in &mut self.monitors {
+            if let Err(e) = ms.renderer.render() {
+                tracing::error!(monitor = %name, "render error: {e}");
+            }
         }
         Ok(())
     }
@@ -149,16 +229,15 @@ impl WallpaperManager {
         tracing::info!("wallpaper resumed");
     }
 
-    /// Drops the renderer and Wayland surface, clearing the wallpaper.
+    /// Drops all per-monitor renderers and surfaces, clearing the wallpaper.
     ///
     /// The Wayland display connection is retained so that a subsequent
-    /// [`set_wallpaper`](Self::set_wallpaper) call can reuse it without
-    /// reconnecting.
+    /// [`set_wallpaper`](Self::set_wallpaper) call can reuse it.
     pub fn stop(&mut self) {
-        // Drop in safe order: renderer first (releases raw pointer borrows),
-        // then surface (invalidates the wl_surface pointer).
-        self.renderer = None;
-        self.wayland_surface = None;
+        // HashMap::clear() drops each MonitorState in unspecified order, but
+        // within each entry the renderer drops before the surface (declaration
+        // order), which is the safe order for raw-pointer cleanup.
+        self.monitors.clear();
         self.current_path = None;
         tracing::info!("wallpaper stopped");
     }

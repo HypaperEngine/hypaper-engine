@@ -65,9 +65,9 @@ async fn main() -> anyhow::Result<()> {
 
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    Some(DaemonCommand::SetWallpaper { path, monitor: _ }) => {
-                        tracing::info!(%path, "setting wallpaper");
-                        if let Err(e) = wallpaper_manager.set_wallpaper(&path).await {
+                    Some(DaemonCommand::SetWallpaper { path, monitor }) => {
+                        tracing::info!(%path, monitor = ?monitor, "setting wallpaper");
+                        if let Err(e) = wallpaper_manager.set_wallpaper(&path, monitor).await {
                             tracing::error!("set_wallpaper failed: {e}");
                         }
                     }
@@ -94,7 +94,7 @@ async fn main() -> anyhow::Result<()> {
                     Some(DaemonCommand::Reload) => {
                         if let Some(path) = wallpaper_manager.current_path.clone() {
                             tracing::info!(%path, "reloading wallpaper");
-                            if let Err(e) = wallpaper_manager.set_wallpaper(&path).await {
+                            if let Err(e) = wallpaper_manager.set_wallpaper(&path, None).await {
                                 tracing::error!("reload failed: {e}");
                             }
                         } else {
