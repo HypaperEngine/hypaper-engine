@@ -31,6 +31,8 @@ pub struct SceneConfig {
 pub struct Scene {
     /// Scene metadata (name, author, versions).
     pub meta: SceneMeta,
+    /// Rendering configuration (fps, resolution).
+    pub config: SceneConfig,
     /// Ordered list of compositing layers (bottom-to-top by `z_index`).
     pub layers: Vec<Layer>,
     /// Optional background audio track.
