@@ -148,3 +148,149 @@ impl Default for ScriptEngine {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_load_script_empty_source() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+
+        // Act
+        let result = engine.load_script("");
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_load_script_invalid_syntax_returns_compile_error() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+
+        // Act
+        let result = engine.load_script("fn {{{");
+
+        // Assert
+        assert!(matches!(result, Err(ScriptError::Compile(_))));
+    }
+
+    #[test]
+    fn test_call_on_init_without_function_returns_empty_api() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        engine.load_script("").unwrap();
+
+        // Act
+        let result = engine.call_on_init();
+
+        // Assert
+        let api = result.expect("call_on_init should succeed when on_init is absent");
+        assert!(api.layer_opacity.is_empty());
+        assert!(api.layer_visible.is_empty());
+        assert!(api.uniforms.is_empty());
+        assert!(api.audio_volume.is_none());
+        assert!(api.audio_muted.is_none());
+    }
+
+    #[test]
+    fn test_call_on_init_set_layer_opacity() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        engine
+            .load_script(r#"fn on_init() { set_layer_opacity("bg", 0.5); }"#)
+            .unwrap();
+
+        // Act
+        let api = engine
+            .call_on_init()
+            .expect("on_init should run without error");
+
+        // Assert
+        assert_eq!(api.layer_opacity.len(), 1);
+        let (id, opacity) = &api.layer_opacity[0];
+        assert_eq!(id, "bg");
+        assert!((opacity - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_call_on_workspace_change_layer_visible() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        engine
+            .load_script(
+                r#"fn on_workspace_change(from, to) { set_layer_visible("particles", to == 2); }"#,
+            )
+            .unwrap();
+
+        // Act — switch to workspace 2
+        let api_to_2 = engine
+            .call_on_workspace_change(1, 2)
+            .expect("callback should succeed");
+
+        // Assert — particles visible on workspace 2
+        assert_eq!(api_to_2.layer_visible.len(), 1);
+        let (id, visible) = &api_to_2.layer_visible[0];
+        assert_eq!(id, "particles");
+        assert!(*visible);
+
+        // Act — switch away from workspace 2
+        let api_from_2 = engine
+            .call_on_workspace_change(2, 1)
+            .expect("callback should succeed");
+
+        // Assert — particles hidden on other workspaces
+        assert_eq!(api_from_2.layer_visible.len(), 1);
+        let (id, visible) = &api_from_2.layer_visible[0];
+        assert_eq!(id, "particles");
+        assert!(!*visible);
+    }
+
+    #[test]
+    fn test_call_on_fullscreen_sets_audio_muted() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        engine
+            .load_script(r#"fn on_fullscreen(active) { set_audio_muted(active); }"#)
+            .unwrap();
+
+        // Act
+        let api = engine
+            .call_on_fullscreen(true)
+            .expect("on_fullscreen should succeed");
+
+        // Assert
+        assert_eq!(api.audio_muted, Some(true));
+    }
+
+    #[test]
+    fn test_sandboxing_infinite_loop_returns_runtime_error() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        engine.load_script("fn on_init() { loop {} }").unwrap();
+
+        // Act
+        let result = engine.call_on_init();
+
+        // Assert
+        assert!(
+            matches!(result, Err(ScriptError::Runtime(_))),
+            "infinite loop should be terminated by the operations limit"
+        );
+    }
+
+    #[test]
+    fn test_call_on_tick_with_delta() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        engine.load_script("fn on_tick(delta) { }").unwrap();
+
+        // Act
+        let result = engine.call_on_tick(0.016);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+}

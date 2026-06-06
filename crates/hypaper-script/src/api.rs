@@ -31,10 +31,11 @@ pub struct SceneApi {
 /// All mutations are accumulated in `api` and retrieved after the callback
 /// returns via [`std::mem::take`].
 pub fn register_api(engine: &mut rhai::Engine, api: std::sync::Arc<std::sync::Mutex<SceneApi>>) {
+    // Rhai's default float type is f64; we cast to f32 at the boundary.
     let a = api.clone();
-    engine.register_fn("set_layer_opacity", move |id: &str, opacity: f32| {
+    engine.register_fn("set_layer_opacity", move |id: &str, opacity: f64| {
         if let Ok(mut guard) = a.lock() {
-            guard.layer_opacity.push((id.to_string(), opacity));
+            guard.layer_opacity.push((id.to_string(), opacity as f32));
         }
     });
 
@@ -53,9 +54,9 @@ pub fn register_api(engine: &mut rhai::Engine, api: std::sync::Arc<std::sync::Mu
     });
 
     let a = api.clone();
-    engine.register_fn("fade_audio", move |volume: f32, _duration: f32| {
+    engine.register_fn("fade_audio", move |volume: f64, _duration: f64| {
         if let Ok(mut guard) = a.lock() {
-            guard.audio_volume = Some(volume);
+            guard.audio_volume = Some(volume as f32);
         }
     });
 }
