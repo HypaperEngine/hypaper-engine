@@ -1,0 +1,15 @@
+[package]
+name = "hypaper-script"
+description = "Sandboxed Rhai scripting engine for scene automation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hypaper-types = { path = "../hypaper-types" }
+rhai = { version = "1", features = ["sync"] }
+thiserror = { workspace = true }
+tracing = { workspace = true }

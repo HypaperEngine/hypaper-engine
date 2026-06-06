@@ -7,6 +7,7 @@ members = [
     "crates/hypaper-hyprland",
     "crates/hypaper-daemon",
     "crates/hypaper-cli",
+    "crates/hypaper-script",
 ]
 resolver = "2"
 
