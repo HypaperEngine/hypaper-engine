@@ -3,6 +3,7 @@
 //! Spawns the Wayland, renderer, and Hyprland subsystems, then exposes a Unix
 //! domain socket for `hypaperctl` to send IPC commands at runtime.
 
+mod battery;
 mod config;
 mod ipc;
 mod state;
@@ -28,7 +29,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let daemon_state = state::DaemonState::new();
-    let mut wallpaper_manager = wallpaper::WallpaperManager::new();
+    let mut wallpaper_manager =
+        wallpaper::WallpaperManager::new(cfg.pause_on_fullscreen, cfg.pause_on_battery);
 
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<DaemonCommand>(64);
     let (event_tx, mut event_rx) = mpsc::channel(64);
@@ -54,6 +56,10 @@ async fn main() -> anyhow::Result<()> {
     let mut render_ticker = tokio::time::interval(Duration::from_nanos(frame_ns));
     render_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // Battery ticker: polls sysfs every 30 seconds.
+    let mut battery_ticker = tokio::time::interval(Duration::from_secs(30));
+    battery_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     // Main event loop — interleaves frame rendering with command and event handling.
     loop {
         tokio::select! {
@@ -61,6 +67,11 @@ async fn main() -> anyhow::Result<()> {
                 if let Err(e) = wallpaper_manager.render_frame() {
                     tracing::error!("render frame error: {e}");
                 }
+            }
+
+            _ = battery_ticker.tick() => {
+                wallpaper_manager.on_battery = battery::is_on_battery();
+                tracing::debug!(on_battery = wallpaper_manager.on_battery, "battery status updated");
             }
 
             cmd = cmd_rx.recv() => {

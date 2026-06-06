@@ -40,11 +40,22 @@ pub struct WallpaperManager {
     script_engine: Option<hypaper_script::ScriptEngine>,
     /// Last known Hyprland workspace id; used as `from` in `on_workspace_change`.
     current_workspace: i64,
+    /// Pause rendering while a fullscreen window is active on any monitor.
+    pub pause_on_fullscreen: bool,
+    /// Pause rendering while the system is on battery power.
+    pub pause_on_battery: bool,
+    /// Whether a fullscreen window is currently active.
+    pub fullscreen_active: bool,
+    /// Whether the system is currently on battery power.
+    pub on_battery: bool,
 }
 
 impl WallpaperManager {
     /// Creates a `WallpaperManager` with no active wallpapers.
-    pub fn new() -> Self {
+    ///
+    /// `pause_on_fullscreen` and `pause_on_battery` are sourced from the
+    /// daemon configuration loaded at startup.
+    pub fn new(pause_on_fullscreen: bool, pause_on_battery: bool) -> Self {
         Self {
             monitors: HashMap::new(),
             current_path: None,
@@ -52,6 +63,10 @@ impl WallpaperManager {
             wayland_display: None,
             script_engine: None,
             current_workspace: 0,
+            pause_on_fullscreen,
+            pause_on_battery,
+            fullscreen_active: false,
+            on_battery: false,
         }
     }
 
@@ -211,9 +226,14 @@ impl WallpaperManager {
 
     /// Renders one frame on every active monitor, skipping monitors that fail.
     ///
-    /// Does nothing when [`paused`](Self::paused) is `true`.
+    /// Skips rendering when the user has paused, when a fullscreen window is
+    /// active and `pause_on_fullscreen` is set, or when the system is on
+    /// battery and `pause_on_battery` is set.
     pub fn render_frame(&mut self) -> Result<(), anyhow::Error> {
-        if self.paused {
+        if self.paused
+            || (self.pause_on_fullscreen && self.fullscreen_active)
+            || (self.pause_on_battery && self.on_battery)
+        {
             return Ok(());
         }
         for (name, ms) in &mut self.monitors {
@@ -348,6 +368,13 @@ impl WallpaperManager {
     ) -> Result<(), anyhow::Error> {
         use hypaper_types::hyprland::HyprlandEvent;
 
+        // Update fullscreen tracking before the engine borrow.
+        match event {
+            HyprlandEvent::FullscreenEntered => self.fullscreen_active = true,
+            HyprlandEvent::FullscreenExited => self.fullscreen_active = false,
+            _ => {}
+        }
+
         // Extract the value before the mutable engine borrow so the fields
         // remain disjoint from the script_engine borrow inside the block.
         let from = self.current_workspace;
@@ -382,6 +409,6 @@ impl WallpaperManager {
 
 impl Default for WallpaperManager {
     fn default() -> Self {
-        Self::new()
+        Self::new(false, false)
     }
 }
