@@ -39,7 +39,7 @@ pub struct WallpaperManager {
     /// Rhai scripting engine loaded from `scripts/logic.rhai` in the scene bundle.
     script_engine: Option<hypaper_script::ScriptEngine>,
     /// Last known Hyprland workspace id; used as `from` in `on_workspace_change`.
-    current_workspace: i64,
+    current_workspace: u32,
     /// Pause rendering while a fullscreen window is active on any monitor.
     pub pause_on_fullscreen: bool,
     /// Pause rendering while the system is on battery power.
@@ -48,6 +48,10 @@ pub struct WallpaperManager {
     pub fullscreen_active: bool,
     /// Whether the system is currently on battery power.
     pub on_battery: bool,
+    /// Per-workspace scene path overrides loaded from `[hyprland.workspaces]`.
+    workspace_wallpapers: std::collections::HashMap<u32, String>,
+    /// Fallback scene path for workspaces not listed in `workspace_wallpapers`.
+    default_wallpaper: Option<String>,
 }
 
 impl WallpaperManager {
@@ -67,6 +71,8 @@ impl WallpaperManager {
             pause_on_battery,
             fullscreen_active: false,
             on_battery: false,
+            workspace_wallpapers: std::collections::HashMap::new(),
+            default_wallpaper: None,
         }
     }
 
@@ -269,6 +275,21 @@ impl WallpaperManager {
         tracing::info!("wallpaper stopped");
     }
 
+    /// Copies workspace wallpaper mappings from a parsed [`HyprlandConfig`].
+    ///
+    /// Called after a successful [`set_wallpaper`](Self::set_wallpaper) when the
+    /// loaded scene contains a `[hyprland]` section.  Replaces any previously
+    /// configured workspace map.
+    pub fn configure_workspaces(&mut self, config: &hypaper_types::hyprland::HyprlandConfig) {
+        self.workspace_wallpapers = config.workspaces.clone();
+        self.default_wallpaper = config.default_workspace.clone();
+        tracing::info!(
+            workspaces = config.workspaces.len(),
+            has_default = config.default_workspace.is_some(),
+            "workspace wallpapers configured",
+        );
+    }
+
     /// Reads `scripts/logic.rhai` from the `.hyscene` ZIP at `path`, compiles it,
     /// and calls `on_init`.  Clears the engine on any error or if no script is
     /// present so stale state is never carried over.
@@ -356,13 +377,17 @@ impl WallpaperManager {
     /// Dispatches a Hyprland event to the matching Rhai callback and applies
     /// the resulting [`SceneApi`](hypaper_script::SceneApi) mutations.
     ///
-    /// Unhandled event variants are silently ignored.  A missing or unloaded
-    /// script engine is also a no-op.
+    /// On [`WorkspaceChanged`](hypaper_types::hyprland::HyprlandEvent::WorkspaceChanged),
+    /// switches the active wallpaper when a path is configured for the new
+    /// workspace (falling back to [`default_wallpaper`](Self::default_wallpaper)
+    /// when set).  Unhandled event variants are silently ignored.  A missing or
+    /// unloaded script engine skips the Rhai dispatch but still performs the
+    /// wallpaper switch.
     ///
     /// # Errors
     ///
     /// Returns an error if the Rhai callback itself returns a runtime error.
-    pub fn on_hyprland_event(
+    pub async fn on_hyprland_event(
         &mut self,
         event: &hypaper_types::hyprland::HyprlandEvent,
     ) -> Result<(), anyhow::Error> {
@@ -375,14 +400,43 @@ impl WallpaperManager {
             _ => {}
         }
 
-        // Extract the value before the mutable engine borrow so the fields
+        // Switch wallpaper when the workspace changes and a mapping exists.
+        if let HyprlandEvent::WorkspaceChanged { id } = event {
+            if self.current_workspace != *id {
+                let path = self
+                    .workspace_wallpapers
+                    .get(id)
+                    .cloned()
+                    .or_else(|| self.default_wallpaper.clone());
+
+                if let Some(path) = path {
+                    if self.current_path.as_deref() != Some(path.as_str()) {
+                        tracing::info!(
+                            workspace = id,
+                            %path,
+                            "switching wallpaper for workspace",
+                        );
+                        if let Err(e) = self.set_wallpaper(&path, None).await {
+                            tracing::error!("workspace wallpaper switch failed: {e}");
+                        }
+                    }
+                }
+            }
+        }
+
+        // Extract from before the mutable engine borrow so the fields
         // remain disjoint from the script_engine borrow inside the block.
-        let from = self.current_workspace;
+        let from = self.current_workspace as i64;
 
         let api = {
             let engine = match self.script_engine.as_mut() {
                 Some(e) => e,
-                None => return Ok(()),
+                None => {
+                    if let HyprlandEvent::WorkspaceChanged { id } = event {
+                        self.current_workspace = *id;
+                    }
+                    return Ok(());
+                }
             };
             match event {
                 HyprlandEvent::WorkspaceChanged { id } => engine
@@ -400,7 +454,7 @@ impl WallpaperManager {
         // engine borrow ends here
 
         if let HyprlandEvent::WorkspaceChanged { id } = event {
-            self.current_workspace = *id as i64;
+            self.current_workspace = *id;
         }
         self.apply_scene_api(&api);
         Ok(())

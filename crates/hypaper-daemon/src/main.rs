@@ -80,6 +80,12 @@ async fn main() -> anyhow::Result<()> {
                         tracing::info!(%path, monitor = ?monitor, "setting wallpaper");
                         if let Err(e) = wallpaper_manager.set_wallpaper(&path, monitor).await {
                             tracing::error!("set_wallpaper failed: {e}");
+                        } else if let Ok(scene) =
+                            hypaper_scene::parse_hyscene(std::path::Path::new(&path))
+                        {
+                            if let Some(hyprland_cfg) = scene.hyprland {
+                                wallpaper_manager.configure_workspaces(&hyprland_cfg);
+                            }
                         }
                     }
                     Some(DaemonCommand::Stop) => {
@@ -123,7 +129,7 @@ async fn main() -> anyhow::Result<()> {
                 match event {
                     Some(ev) => {
                         tracing::debug!(?ev, "Hyprland event");
-                        if let Err(e) = wallpaper_manager.on_hyprland_event(&ev) {
+                        if let Err(e) = wallpaper_manager.on_hyprland_event(&ev).await {
                             tracing::warn!("script error on Hyprland event: {e}");
                         }
                     }
