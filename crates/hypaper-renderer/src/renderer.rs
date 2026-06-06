@@ -7,6 +7,7 @@ use crate::{
     context::{create_context_for_surface, RenderContext},
     error::RendererError,
     fit::{compute_uvs, FitMode},
+    particles::ParticleSystem,
     pipeline::{create_fullscreen_pipeline, RenderPipeline},
     shader_layer::ShaderLayerRenderer,
     texture::{load_texture_from_bytes, GpuTexture},
@@ -28,6 +29,8 @@ pub struct Renderer {
     pub current_texture: Option<GpuTexture>,
     /// Active WGSL shader layers drawn over the image, in order.
     pub shader_layers: Vec<ShaderLayerRenderer>,
+    /// Active CPU-driven particle systems drawn over shader layers, in order.
+    pub particle_systems: Vec<ParticleSystem>,
     /// Surface width in pixels.
     pub width: u32,
     /// Surface height in pixels.
@@ -36,6 +39,8 @@ pub struct Renderer {
     fit_mode: FitMode,
     /// Instant at construction; used to compute `time` uniforms for shader layers.
     start_time: std::time::Instant,
+    /// Instant of the last [`render`](Self::render) call; used to compute per-frame delta.
+    last_frame: std::time::Instant,
 }
 
 impl Renderer {
@@ -104,10 +109,12 @@ impl Renderer {
             pipeline,
             current_texture: None,
             shader_layers: Vec::new(),
+            particle_systems: Vec::new(),
             width,
             height,
             fit_mode: FitMode::Fill,
             start_time: std::time::Instant::now(),
+            last_frame: std::time::Instant::now(),
         })
     }
 
@@ -155,6 +162,24 @@ impl Renderer {
         Ok(())
     }
 
+    /// Creates a particle system from `config`, compiles its GPU pipeline, and
+    /// appends it to the render stack.  The system produces no output until
+    /// [`ParticleSystem::set_texture`] is called on the returned index or via the
+    /// `particle_systems` field.
+    ///
+    /// # Errors
+    ///
+    /// Currently always succeeds; the signature uses `Result` for future-proofing.
+    pub fn add_particle_system(
+        &mut self,
+        config: hypaper_types::layer::ParticleLayer,
+    ) -> Result<(), RendererError> {
+        let mut system = ParticleSystem::new(config);
+        system.build_pipeline(&self.context.device, self.surface_config.format);
+        self.particle_systems.push(system);
+        Ok(())
+    }
+
     /// Renders one frame to the swap chain.
     ///
     /// Skipped entirely when there is nothing to render (no image and no shader
@@ -167,9 +192,16 @@ impl Renderer {
     /// Returns [`RendererError::Render`] if the swap-chain texture cannot be
     /// acquired or command encoding fails.
     pub fn render(&mut self) -> Result<(), RendererError> {
-        if self.current_texture.is_none() && self.shader_layers.is_empty() {
+        if self.current_texture.is_none()
+            && self.shader_layers.is_empty()
+            && self.particle_systems.is_empty()
+        {
             return Ok(());
         }
+
+        let now = std::time::Instant::now();
+        let delta = now.duration_since(self.last_frame).as_secs_f32();
+        self.last_frame = now;
 
         let output = self
             .surface
@@ -255,6 +287,12 @@ impl Renderer {
         for layer in &mut self.shader_layers {
             layer.update_uniforms(&self.context.queue, time, resolution, [0.0, 0.0]);
             layer.render(&mut encoder, &view);
+        }
+
+        // Particle systems: advance simulation then record a render pass per system.
+        for system in &mut self.particle_systems {
+            system.update(delta, self.width, self.height);
+            system.render(&mut encoder, &view, &self.context.queue, &self.context.device);
         }
 
         self.context.queue.submit(std::iter::once(encoder.finish()));
