@@ -264,11 +264,9 @@ impl Dispatch<wl_output::WlOutput, usize> for WaylandState {
                 }
                 // Sent for every advertised output mode; we keep the last one
                 // (compositors send the current mode last).
-                wl_output::Event::Mode { width, height, .. } => {
-                    if width > 0 && height > 0 {
-                        info.width = width as u32;
-                        info.height = height as u32;
-                    }
+                wl_output::Event::Mode { width, height, .. } if width > 0 && height > 0 => {
+                    info.width = width as u32;
+                    info.height = height as u32;
                 }
                 _ => {}
             }

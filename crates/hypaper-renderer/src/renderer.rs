@@ -292,7 +292,12 @@ impl Renderer {
         // Particle systems: advance simulation then record a render pass per system.
         for system in &mut self.particle_systems {
             system.update(delta, self.width, self.height);
-            system.render(&mut encoder, &view, &self.context.queue, &self.context.device);
+            system.render(
+                &mut encoder,
+                &view,
+                &self.context.queue,
+                &self.context.device,
+            );
         }
 
         self.context.queue.submit(std::iter::once(encoder.finish()));

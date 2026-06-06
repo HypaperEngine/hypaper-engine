@@ -11,7 +11,9 @@ use crate::{
 use hypaper_types::layer::{EmitterMode, ParticleLayer};
 
 fn next_f32(seed: &mut u64) -> f32 {
-    *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    *seed = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     ((*seed >> 33) as f32) / (u32::MAX as f32)
 }
 
