@@ -7,6 +7,7 @@ use crate::{
     context::{create_context_for_surface, RenderContext},
     error::RendererError,
     fit::{compute_uvs, FitMode},
+    parallax::ParallaxState,
     particles::ParticleSystem,
     pipeline::{create_fullscreen_pipeline, RenderPipeline},
     shader_layer::ShaderLayerRenderer,
@@ -41,6 +42,8 @@ pub struct Renderer {
     start_time: std::time::Instant,
     /// Instant of the last [`render`](Self::render) call; used to compute per-frame delta.
     last_frame: std::time::Instant,
+    /// Optional parallax effect state; `None` when parallax is disabled.
+    parallax: Option<ParallaxState>,
 }
 
 impl Renderer {
@@ -115,6 +118,7 @@ impl Renderer {
             fit_mode: FitMode::Fill,
             start_time: std::time::Instant::now(),
             last_frame: std::time::Instant::now(),
+            parallax: None,
         })
     }
 
@@ -178,6 +182,23 @@ impl Renderer {
         system.build_pipeline(&self.context.device, self.surface_config.format);
         self.particle_systems.push(system);
         Ok(())
+    }
+
+    /// Enables the parallax effect with the given `intensity` (fraction of viewport).
+    ///
+    /// Replaces any previously active `ParallaxState`.  Call this after the renderer
+    /// is created when the scene's `[hyprland]` section has `parallax = true`.
+    pub fn enable_parallax(&mut self, intensity: f32) {
+        self.parallax = Some(ParallaxState::new(intensity));
+        tracing::debug!(intensity, "parallax enabled");
+    }
+
+    /// Notifies the parallax system of a workspace change so it can start the
+    /// slide animation.  No-op when parallax is disabled.
+    pub fn on_workspace_change(&mut self, from: u32, to: u32) {
+        if let Some(ref mut p) = self.parallax {
+            p.on_workspace_change(from, to);
+        }
     }
 
     /// Renders one frame to the swap chain.
@@ -280,12 +301,28 @@ impl Renderer {
             pass.draw(0..6, 0..1);
         }
 
+        // Advance parallax simulation and read the current offset.
+        if let Some(ref mut p) = self.parallax {
+            p.update(delta);
+        }
+        let parallax_offset = self
+            .parallax
+            .as_ref()
+            .map(|p| p.get_offset())
+            .unwrap_or([0.0, 0.0]);
+
         // Shader layers: update uniforms then record a render pass per layer.
         let time = self.start_time.elapsed().as_secs_f32();
         let resolution = [self.width as f32, self.height as f32];
 
         for layer in &mut self.shader_layers {
-            layer.update_uniforms(&self.context.queue, time, resolution, [0.0, 0.0]);
+            layer.update_uniforms(
+                &self.context.queue,
+                time,
+                resolution,
+                [0.0, 0.0],
+                parallax_offset,
+            );
             layer.render(&mut encoder, &view);
         }
 

@@ -218,6 +218,13 @@ impl WallpaperManager {
             }
         }
 
+        // Enable parallax if the scene requests it.
+        if let Some(ref hyprland_cfg) = scene.hyprland {
+            if hyprland_cfg.parallax {
+                renderer.enable_parallax(hyprland_cfg.parallax_intensity);
+            }
+        }
+
         self.monitors
             .insert(monitor_name.to_owned(), MonitorState { renderer, surface });
 
@@ -427,6 +434,14 @@ impl WallpaperManager {
         // Extract from before the mutable engine borrow so the fields
         // remain disjoint from the script_engine borrow inside the block.
         let from = self.current_workspace as i64;
+
+        // Notify all active renderers so they can start the parallax slide animation.
+        if let HyprlandEvent::WorkspaceChanged { id } = event {
+            let from_ws = self.current_workspace;
+            for ms in self.monitors.values_mut() {
+                ms.renderer.on_workspace_change(from_ws, *id);
+            }
+        }
 
         let api = {
             let engine = match self.script_engine.as_mut() {

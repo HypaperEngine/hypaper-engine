@@ -12,6 +12,7 @@ use crate::{
 /// - `uniforms.time`         — elapsed seconds
 /// - `uniforms.resolution_x` / `uniforms.resolution_y` — viewport size in pixels
 /// - `uniforms.mouse_x`      / `uniforms.mouse_y`       — cursor position in pixels
+/// - `uniforms.parallax_x`   / `uniforms.parallax_y`    — parallax offset (normalised)
 ///
 /// The struct layout (8 × f32 = 32 bytes) matches [`AutoUniforms`] exactly.
 const PREAMBLE: &str = r#"
@@ -22,9 +23,9 @@ struct AutoUniforms {
     resolution_y: f32,
     mouse_x: f32,
     mouse_y: f32,
+    parallax_x: f32,
+    parallax_y: f32,
     _p0: f32,
-    _p1: f32,
-    _p2: f32,
 }
 @group(0) @binding(0) var<uniform> uniforms: AutoUniforms;
 "#;
@@ -138,20 +139,22 @@ impl ShaderLayerRenderer {
         })
     }
 
-    /// Writes updated `time`, `resolution`, and `mouse` values into the uniform
-    /// buffer.  Call once per frame before [`render`](Self::render).
+    /// Writes updated `time`, `resolution`, `mouse`, and `parallax_offset` values
+    /// into the uniform buffer.  Call once per frame before [`render`](Self::render).
     pub fn update_uniforms(
         &mut self,
         queue: &wgpu::Queue,
         time: f32,
         resolution: [f32; 2],
         mouse: [f32; 2],
+        parallax_offset: [f32; 2],
     ) {
         let uniforms = AutoUniforms {
             time,
             resolution,
             mouse,
-            _pad: [0.0; 3],
+            parallax_offset,
+            _pad: [0.0; 1],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }

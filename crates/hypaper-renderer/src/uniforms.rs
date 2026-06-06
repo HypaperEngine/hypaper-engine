@@ -4,16 +4,17 @@
 ///
 /// Layout (32 bytes, `#[repr(C)]`):
 ///
-/// | offset | field        | type     |
-/// |--------|--------------|----------|
-/// | 0      | `time`       | `f32`    |
-/// | 4      | `resolution` | `[f32;2]`|
-/// | 12     | `mouse`      | `[f32;2]`|
-/// | 20     | `_pad`       | `[f32;3]`|
+/// | offset | field            | type     |
+/// |--------|------------------|----------|
+/// | 0      | `time`           | `f32`    |
+/// | 4      | `resolution`     | `[f32;2]`|
+/// | 12     | `mouse`          | `[f32;2]`|
+/// | 20     | `parallax_offset`| `[f32;2]`|
+/// | 28     | `_pad`           | `[f32;1]`|
 ///
-/// The three padding words grow the struct to 32 bytes, which is the smallest
-/// multiple of 16 that fits the payload and satisfies the WGSL extended-alignment
-/// requirement for `uniform` address-space structs.
+/// One padding word keeps the total at 32 bytes, the smallest multiple of 16
+/// that fits the payload and satisfies the WGSL extended-alignment requirement
+/// for `uniform` address-space structs.
 #[repr(C)]
 #[derive(bytemuck::Pod, bytemuck::Zeroable, Clone, Copy, Debug)]
 pub struct AutoUniforms {
@@ -23,8 +24,10 @@ pub struct AutoUniforms {
     pub resolution: [f32; 2],
     /// Cursor position in pixels: `[x, y]`.
     pub mouse: [f32; 2],
+    /// Parallax slide offset in normalised screen coordinates: `[x, y]`.
+    pub parallax_offset: [f32; 2],
     /// Padding to 32 bytes for wgpu uniform-buffer alignment.
-    pub _pad: [f32; 3],
+    pub _pad: [f32; 1],
 }
 
 /// Creates a GPU buffer sized for [`AutoUniforms`], ready for per-frame writes.
