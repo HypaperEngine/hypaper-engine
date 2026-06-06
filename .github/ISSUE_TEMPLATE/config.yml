@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: GitHub Discussions
+    url: https://github.com/HypaperEngine/hypaper-engine/discussions
+    about: Ask questions and discuss ideas here
+  - name: Living Specification
+    url: https://github.com/HypaperEngine/hypaper-spec
+    about: Propose changes to the .hyscene format here

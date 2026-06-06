@@ -1,0 +1,31 @@
+# Auto-detect text files and normalize line endings
+* text=auto
+
+# Rust source files
+*.rs text eol=lf diff=rust
+
+# TOML config files
+*.toml text eol=lf
+
+# Markdown
+*.md text eol=lf
+
+# WGSL shaders
+*.wgsl text eol=lf
+
+# Rhai scripts
+*.rhai text eol=lf
+
+# Shell scripts
+*.sh text eol=lf
+
+# Binary assets — no diff, no text conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.ogg binary
+*.mp3 binary
+*.flac binary
+*.wav binary
+*.mp4 binary

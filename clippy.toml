@@ -1,0 +1,2 @@
+# Clippy configuration for Hypaper Engine
+msrv = "1.75.0"
