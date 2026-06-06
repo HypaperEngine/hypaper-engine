@@ -110,7 +110,12 @@ async fn main() -> anyhow::Result<()> {
 
             event = event_rx.recv() => {
                 match event {
-                    Some(ev) => tracing::debug!(?ev, "Hyprland event"),
+                    Some(ev) => {
+                        tracing::debug!(?ev, "Hyprland event");
+                        if let Err(e) = wallpaper_manager.on_hyprland_event(&ev) {
+                            tracing::warn!("script error on Hyprland event: {e}");
+                        }
+                    }
                     None => tracing::warn!("Hyprland event channel closed"),
                 }
             }

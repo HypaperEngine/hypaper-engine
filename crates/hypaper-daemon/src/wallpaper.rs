@@ -36,6 +36,10 @@ pub struct WallpaperManager {
     pub paused: bool,
     /// Live Wayland display connection; reused across wallpaper changes.
     wayland_display: Option<hypaper_wayland::display::WaylandDisplay>,
+    /// Rhai scripting engine loaded from `scripts/logic.rhai` in the scene bundle.
+    script_engine: Option<hypaper_script::ScriptEngine>,
+    /// Last known Hyprland workspace id; used as `from` in `on_workspace_change`.
+    current_workspace: i64,
 }
 
 impl WallpaperManager {
@@ -46,6 +50,8 @@ impl WallpaperManager {
             current_path: None,
             paused: false,
             wayland_display: None,
+            script_engine: None,
+            current_workspace: 0,
         }
     }
 
@@ -92,6 +98,7 @@ impl WallpaperManager {
             }
         }
 
+        self.load_scene_script(path);
         self.current_path = Some(path.to_owned());
         Ok(())
     }
@@ -240,6 +247,136 @@ impl WallpaperManager {
         self.monitors.clear();
         self.current_path = None;
         tracing::info!("wallpaper stopped");
+    }
+
+    /// Reads `scripts/logic.rhai` from the `.hyscene` ZIP at `path`, compiles it,
+    /// and calls `on_init`.  Clears the engine on any error or if no script is
+    /// present so stale state is never carried over.
+    fn load_scene_script(&mut self, path: &str) {
+        let file = match std::fs::File::open(path) {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::debug!("scene not opened for script check: {e}");
+                self.script_engine = None;
+                return;
+            }
+        };
+        let mut archive = match zip::ZipArchive::new(file) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::debug!("archive not readable for script check: {e}");
+                self.script_engine = None;
+                return;
+            }
+        };
+
+        let source = match archive.by_name("scripts/logic.rhai") {
+            Ok(mut entry) => {
+                let mut s = String::new();
+                match entry.read_to_string(&mut s) {
+                    Ok(_) => s,
+                    Err(e) => {
+                        tracing::warn!("could not read scripts/logic.rhai: {e}");
+                        self.script_engine = None;
+                        return;
+                    }
+                }
+            }
+            Err(_) => {
+                // No script in this scene — not an error.
+                self.script_engine = None;
+                return;
+            }
+        };
+
+        let mut engine = hypaper_script::ScriptEngine::new();
+        if let Err(e) = engine.load_script(&source) {
+            tracing::warn!("script compile error: {e}");
+            self.script_engine = None;
+            return;
+        }
+        tracing::info!("script loaded: scripts/logic.rhai");
+        self.script_engine = Some(engine);
+
+        let init_api = {
+            let e = match self.script_engine.as_mut() {
+                Some(e) => e,
+                None => return,
+            };
+            match e.call_on_init() {
+                Ok(api) => api,
+                Err(e) => {
+                    tracing::warn!("on_init error: {e}");
+                    return;
+                }
+            }
+        };
+        self.apply_scene_api(&init_api);
+    }
+
+    /// Applies the mutations collected by a script callback to the live scene.
+    ///
+    /// Per-layer opacity and visibility changes are logged at DEBUG level until
+    /// the renderer exposes per-layer mutation APIs.
+    fn apply_scene_api(&mut self, api: &hypaper_script::SceneApi) {
+        for (id, opacity) in &api.layer_opacity {
+            tracing::debug!(layer = %id, opacity, "script: set_layer_opacity");
+        }
+        for (id, visible) in &api.layer_visible {
+            tracing::debug!(layer = %id, visible, "script: set_layer_visible");
+        }
+        if let Some(vol) = api.audio_volume {
+            tracing::debug!(volume = vol, "script: fade_audio");
+        }
+        if let Some(muted) = api.audio_muted {
+            tracing::debug!(muted, "script: set_audio_muted");
+        }
+    }
+
+    /// Dispatches a Hyprland event to the matching Rhai callback and applies
+    /// the resulting [`SceneApi`](hypaper_script::SceneApi) mutations.
+    ///
+    /// Unhandled event variants are silently ignored.  A missing or unloaded
+    /// script engine is also a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Rhai callback itself returns a runtime error.
+    pub fn on_hyprland_event(
+        &mut self,
+        event: &hypaper_types::hyprland::HyprlandEvent,
+    ) -> Result<(), anyhow::Error> {
+        use hypaper_types::hyprland::HyprlandEvent;
+
+        // Extract the value before the mutable engine borrow so the fields
+        // remain disjoint from the script_engine borrow inside the block.
+        let from = self.current_workspace;
+
+        let api = {
+            let engine = match self.script_engine.as_mut() {
+                Some(e) => e,
+                None => return Ok(()),
+            };
+            match event {
+                HyprlandEvent::WorkspaceChanged { id } => engine
+                    .call_on_workspace_change(from, *id as i64)
+                    .map_err(|e| anyhow::anyhow!("script on_workspace_change: {e}"))?,
+                HyprlandEvent::FullscreenEntered => engine
+                    .call_on_fullscreen(true)
+                    .map_err(|e| anyhow::anyhow!("script on_fullscreen: {e}"))?,
+                HyprlandEvent::FullscreenExited => engine
+                    .call_on_fullscreen(false)
+                    .map_err(|e| anyhow::anyhow!("script on_fullscreen: {e}"))?,
+                _ => return Ok(()),
+            }
+        };
+        // engine borrow ends here
+
+        if let HyprlandEvent::WorkspaceChanged { id } = event {
+            self.current_workspace = *id as i64;
+        }
+        self.apply_scene_api(&api);
+        Ok(())
     }
 }
 
